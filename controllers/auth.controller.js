@@ -1,13 +1,14 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/user.models.js";
+import { checkUsername, checkEmail, checkPassword, collect, sendInvalid } from "../utils/validate.js";
+
+// Compared against when the user does not exist, so login timing doesn't reveal valid accounts.
+const DUMMY_HASH = bcrypt.hashSync("cubeverse-timing-pad", 10);
 
 // Helper to generate JWT Token
 const generateToken = (id) => {
-  const secret = process.env.JWT_SECRET || "cubeverse_jwt_secret_token_key_super_secure_2026_9999";
-  return jwt.sign({ id }, secret, {
-    expiresIn: "30d",
-  });
+  return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: "30d" });
 };
 
 // @desc    Register a new user
@@ -17,20 +18,12 @@ export const register = async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
-    // Validation
-    if (!username || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide username, email, and password.",
-      });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be at least 6 characters long.",
-      });
-    }
+    const errors = collect({
+      username: checkUsername(username),
+      email: checkEmail(email),
+      password: checkPassword(password),
+    });
+    if (Object.keys(errors).length) return sendInvalid(res, errors);
 
     const cleanEmail = email.toLowerCase().trim();
     const cleanUsername = username.trim();
@@ -82,10 +75,16 @@ export const register = async (req, res) => {
       },
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "That email or username is already registered.",
+      });
+    }
     console.error("Register error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Server error while registering user.",
+      message: "Server error while registering user.",
     });
   }
 };
@@ -97,11 +96,12 @@ export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide email and password.",
-      });
+    // the email field may carry an email or a username
+    if (
+      typeof email !== "string" || !email.trim() || email.length > 254 ||
+      typeof password !== "string" || !password || password.length > 72
+    ) {
+      return sendInvalid(res, { email: "Please provide your email/username and password." });
     }
 
     const cleanInput = email.toLowerCase().trim();
@@ -112,6 +112,7 @@ export const login = async (req, res) => {
     });
 
     if (!user) {
+      await bcrypt.compare(password, DUMMY_HASH);
       return res.status(401).json({
         success: false,
         message: "Invalid email/username or password.",
@@ -148,7 +149,47 @@ export const login = async (req, res) => {
     console.error("Login error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Server error while logging in.",
+      message: "Server error while logging in.",
+    });
+  }
+};
+
+// @desc    Change password (invalidates all older tokens, returns a fresh one)
+// @route   PUT /api/auth/password
+// @access  Private
+export const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (typeof currentPassword !== "string" || !currentPassword || currentPassword.length > 72) {
+      return sendInvalid(res, { currentPassword: "Please enter your current password." });
+    }
+    const newError = checkPassword(newPassword);
+    if (newError) return sendInvalid(res, { newPassword: newError });
+    if (newPassword === currentPassword) {
+      return sendInvalid(res, { newPassword: "New password must be different from the current one." });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+      return sendInvalid(res, { currentPassword: "Current password is incorrect." });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    // iat has 1s resolution: floor so the token issued below is still accepted
+    user.passwordChangedAt = new Date(Math.floor(Date.now() / 1000) * 1000);
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Password updated successfully",
+      token: generateToken(user._id),
+    });
+  } catch (error) {
+    console.error("Change password error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Server error while changing password.",
     });
   }
 };
@@ -180,7 +221,7 @@ export const getMe = async (req, res) => {
     console.error("GetMe error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Server error while fetching user profile.",
+      message: "Server error while fetching user profile.",
     });
   }
 };

@@ -1,5 +1,10 @@
 import TimeLog from "../models/timeLog.models.js";
 import User from "../models/user.models.js";
+import mongoose from "mongoose";
+import { checkCategory, sendInvalid } from "../utils/validate.js";
+
+const MAX_SOLVE_SECONDS = 86400;
+const MAX_SCRAMBLE_LENGTH = 500;
 
 // Helper to calculate statistics from a list of logs
 const calculateStats = (logs) => {
@@ -43,7 +48,9 @@ const calculateStats = (logs) => {
 export const getTimes = async (req, res) => {
   try {
     const userId = req.user._id;
-    const category = req.query.category || "3x3";
+    const category = req.query.category ?? "3x3";
+    const categoryError = checkCategory(category, { allowAll: true });
+    if (categoryError) return sendInvalid(res, { category: categoryError });
 
     const query = { userId };
     if (category && category !== "all") {
@@ -69,7 +76,7 @@ export const getTimes = async (req, res) => {
     console.error("getTimes error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Failed to retrieve user times.",
+      message: "Failed to retrieve user times.",
     });
   }
 };
@@ -82,12 +89,14 @@ export const saveTime = async (req, res) => {
     const userId = req.user._id;
     const { time, scramble, category = "3x3" } = req.body;
 
-    const numericTime = Number(time);
-    if (isNaN(numericTime) || numericTime <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "A valid positive solve time is required.",
-      });
+    const numericTime = typeof time === "number" ? time : Number.NaN;
+    if (!Number.isFinite(numericTime) || numericTime <= 0 || numericTime > MAX_SOLVE_SECONDS) {
+      return sendInvalid(res, { time: "A valid positive solve time is required." });
+    }
+    const categoryError = checkCategory(category);
+    if (categoryError) return sendInvalid(res, { category: categoryError });
+    if (scramble !== undefined && (typeof scramble !== "string" || scramble.length > MAX_SCRAMBLE_LENGTH)) {
+      return sendInvalid(res, { scramble: `Scramble must be text up to ${MAX_SCRAMBLE_LENGTH} characters.` });
     }
 
     // Create the new solve log
@@ -132,7 +141,7 @@ export const saveTime = async (req, res) => {
     console.error("saveTime error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Failed to save solve time.",
+      message: "Failed to save solve time.",
     });
   }
 };
@@ -144,7 +153,12 @@ export const deleteTime = async (req, res) => {
   try {
     const userId = req.user._id;
     const { id } = req.params;
-    const category = req.query.category || "3x3";
+    if (!mongoose.isValidObjectId(id)) {
+      return sendInvalid(res, { id: "Invalid solve id." });
+    }
+    const category = req.query.category ?? "3x3";
+    const categoryError = checkCategory(category, { allowAll: true });
+    if (categoryError) return sendInvalid(res, { category: categoryError });
 
     const log = await TimeLog.findOneAndDelete({ _id: id, userId });
     if (!log) {
@@ -186,7 +200,7 @@ export const deleteTime = async (req, res) => {
     console.error("deleteTime error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Failed to delete time log.",
+      message: "Failed to delete time log.",
     });
   }
 };
@@ -197,7 +211,9 @@ export const deleteTime = async (req, res) => {
 export const resetTimes = async (req, res) => {
   try {
     const userId = req.user._id;
-    const category = req.query.category || "3x3";
+    const category = req.query.category ?? "3x3";
+    const categoryError = checkCategory(category, { allowAll: true });
+    if (categoryError) return sendInvalid(res, { category: categoryError });
 
     const query = { userId };
     if (category && category !== "all") {
@@ -227,7 +243,7 @@ export const resetTimes = async (req, res) => {
     console.error("resetTimes error:", error);
     return res.status(500).json({
       success: false,
-      message: error.message || "Failed to reset times.",
+      message: "Failed to reset times.",
     });
   }
 };

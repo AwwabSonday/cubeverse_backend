@@ -4,14 +4,22 @@ import dotenv from "dotenv";
 import { connectDB } from "./config/db.js";
 import authRoutes from "./routes/auth.routes.js";
 import timesRoutes from "./routes/times.routes.js";
+import { securityHeaders, rateLimit } from "./middleware/security.middleware.js";
 
 // Load environment variables
 dotenv.config();
+
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  console.error("JWT_SECRET must be set (32+ characters) in backend/.env");
+  process.exit(1);
+}
 
 // Connect to MongoDB
 connectDB();
 
 const app = express();
+app.disable("x-powered-by");
+app.use(securityHeaders);
 
 // Middlewares
 app.use(
@@ -27,8 +35,7 @@ app.use(
   })
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "10kb" }));
 
 // Health Check Route
 app.get("/", (req, res) => {
@@ -47,6 +54,10 @@ app.get("/api/health", (req, res) => {
 });
 
 // API Routes
+app.use("/api/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));
+app.use("/api/auth/register", rateLimit({ windowMs: 60 * 60 * 1000, max: 20 }));
+app.use("/api/auth/password", rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }));
+app.use("/api", rateLimit({ windowMs: 60 * 1000, max: 300 }));
 app.use("/api/auth", authRoutes);
 app.use("/api/times", timesRoutes);
 
@@ -61,9 +72,10 @@ app.use((req, res) => {
 // Global Error Handler
 app.use((err, req, res, next) => {
   console.error("Unhandled Error:", err.stack);
-  res.status(err.status || 500).json({
+  const status = err.status >= 400 && err.status < 500 ? err.status : 500;
+  res.status(status).json({
     success: false,
-    message: err.message || "Internal Server Error",
+    message: status === 500 ? "Internal Server Error" : "Invalid request body.",
   });
 });
 
