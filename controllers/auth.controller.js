@@ -1,6 +1,8 @@
+import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/user.models.js";
+import { sendMail } from "../utils/mailer.js";
 import { checkUsername, checkEmail, checkPassword, collect, sendInvalid } from "../utils/validate.js";
 
 // Compared against when the user does not exist, so login timing doesn't reveal valid accounts.
@@ -191,6 +193,81 @@ export const changePassword = async (req, res) => {
       success: false,
       message: "Server error while changing password.",
     });
+  }
+};
+
+const RESET_TTL_MS = 30 * 60 * 1000;
+const hashToken = (token) => crypto.createHash("sha256").update(token).digest("hex");
+
+// @desc    Email a password reset link
+// @route   POST /api/auth/forgot-password
+// @access  Public
+export const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const emailError = checkEmail(email);
+    if (emailError) return sendInvalid(res, { email: emailError });
+
+    // Same answer whether or not the account exists, so this can't be used to find registered emails.
+    const reply = () =>
+      res.status(200).json({
+        success: true,
+        message: "If that email is registered, a reset link has been sent.",
+      });
+
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
+    if (!user) return reply();
+
+    const token = crypto.randomBytes(32).toString("hex");
+    user.resetTokenHash = hashToken(token);
+    user.resetTokenExpires = new Date(Date.now() + RESET_TTL_MS);
+    await user.save();
+
+    const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+    // not awaited: mail latency would also reveal whether the account exists
+    sendMail({
+      to: user.email,
+      subject: "Reset your CubeVerse password",
+      text: `Hi ${user.username},\n\nUse this link to choose a new password (valid for 30 minutes):\n${clientUrl}/reset-password?token=${token}\n\nIf you didn't ask for this, you can ignore this email.`,
+    }).catch((err) => console.error("Reset email failed:", err.message));
+
+    return reply();
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    return res.status(500).json({ success: false, message: "Server error while sending reset email." });
+  }
+};
+
+// @desc    Set a new password using an emailed token
+// @route   POST /api/auth/reset-password
+// @access  Public
+export const resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) {
+      return sendInvalid(res, { token: "This reset link is invalid or has expired." });
+    }
+    const passwordError = checkPassword(newPassword);
+    if (passwordError) return sendInvalid(res, { newPassword: passwordError });
+
+    const user = await User.findOne({
+      resetTokenHash: hashToken(token),
+      resetTokenExpires: { $gt: new Date() },
+    }).select("+resetTokenHash +resetTokenExpires");
+    if (!user) {
+      return sendInvalid(res, { token: "This reset link is invalid or has expired." });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.passwordChangedAt = new Date(Math.floor(Date.now() / 1000) * 1000); // revokes existing sessions
+    user.resetTokenHash = null;
+    user.resetTokenExpires = null;
+    await user.save();
+
+    return res.status(200).json({ success: true, message: "Password reset. You can now log in." });
+  } catch (error) {
+    console.error("Reset password error:", error);
+    return res.status(500).json({ success: false, message: "Server error while resetting password." });
   }
 };
 

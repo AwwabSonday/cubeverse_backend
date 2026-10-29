@@ -14,6 +14,10 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
   process.exit(1);
 }
 
+if (!process.env.SMTP_HOST) {
+  console.warn("SMTP_HOST is not set: password reset emails will only be printed in this console.");
+}
+
 // Connect to MongoDB
 connectDB();
 
@@ -56,6 +60,8 @@ app.get("/api/health", (req, res) => {
 // API Routes
 app.use("/api/auth/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 20 }));
 app.use("/api/auth/register", rateLimit({ windowMs: 60 * 60 * 1000, max: 20 }));
+app.use("/api/auth/forgot-password", rateLimit({ windowMs: 60 * 60 * 1000, max: 5 }));
+app.use("/api/auth/reset-password", rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }));
 app.use("/api/auth/password", rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }));
 app.use("/api", rateLimit({ windowMs: 60 * 1000, max: 300 }));
 app.use("/api/auth", authRoutes);

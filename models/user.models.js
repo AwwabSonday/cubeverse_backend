@@ -27,6 +27,17 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    // sha256 of the emailed reset token; the raw token is never stored
+    resetTokenHash: {
+      type: String,
+      default: null,
+      select: false,
+    },
+    resetTokenExpires: {
+      type: Date,
+      default: null,
+      select: false,
+    },
     phone: {
       type: String,
       required: false,
